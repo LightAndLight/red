@@ -1,124 +1,17 @@
 use std::collections::HashMap;
-use std::convert::From;
-use std::result;
 
-use crate::ast::{Chain, Expr, Foreach, If, Not, RecordRef, VariableRef};
+use crate::ast::Rule;
 use crate::ident::Ident;
 use crate::path::{Path, Seg};
 use crate::types::Type;
 
 #[derive(Debug)]
-pub struct Check<'a>(Result<'a>);
-
-type Result<'a> = result::Result<Type, Errors<'a>>;
-type Errors<'a> = Vec<Error<'a>>;
-
-impl<'a> From<Result<'a>> for Check<'a> {
-    fn from(result: Result<'a>) -> Check<'a> {
-        Check(result)
-    }
-}
-
-impl<'a> From<Check<'a>> for Result<'a> {
-    fn from(check: Check<'a>) -> Result<'a> {
-        check.0
-    }
-}
-
-impl<'a> Check<'a> {
-    fn fail(error: Error) -> Check {
-        let mut errors = Vec::new();
-        errors.push(error);
-        Check(Err(errors))
-    }
-
-    fn succeed(t: Type) -> Self {
-        Check(Ok(t))
-    }
-
-    fn assert_bool(path: Path, received: Type) -> Self {
-        Check::assert_type(path, Type::Bool, received)
-    }
-
-    fn assert_number(path: Path, received: Type) -> Self {
-        Check::assert_type(path, Type::Number, received)
-    }
-
-    fn assert_text(path: Path, received: Type) -> Self {
-        Check::assert_type(path, Type::Text, received)
-    }
-
-    fn assert_type(path: Path, expected: Type, received: Type) -> Self {
-        if expected == received {
-            Check::succeed(received)
-        } else {
-            Check::fail(Error {
-                path,
-                error: TypeError::TypeMismatch(TypeMismatch { expected, received }),
-            })
-        }
-    }
-
-    fn assert_record<'c>(
-        expr: &'c Expr,
-        path: Path,
-        ctx: &mut TypeContext,
-    ) -> result::Result<HashMap<Ident, Type>, Errors<'c>> {
-        match expr.check(path.clone(), ctx).0 {
-            Ok(Type::Record(record)) => Ok(record),
-            Ok(type_) => {
-                let mut errors = Vec::new();
-                let error = Error {
-                    path,
-                    error: TypeError::ExpectedRecord(type_),
-                };
-                errors.push(error);
-
-                Err(errors)
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    fn assert_list(path: Path, received: Type) -> Self {
-        match received {
-            Type::List(_) => Check::succeed(received),
-            _ => Check::fail(Error {
-                path,
-                error: TypeError::ExpectedList(received),
-            }),
-        }
-    }
-
-    fn map<F: FnOnce(Type) -> Type>(self, f: F) -> Self {
-        Check(self.0.map(f))
-    }
-
-    fn map2<F>(f: F, r1: Check<'a>, r2: Check<'a>) -> Self
-    where
-        F: FnOnce(Type, Type) -> Type,
-    {
-        let result = match (r1.0, r2.0) {
-            (Ok(a), Ok(b)) => Ok(f(a, b)),
-            (Err(a), Err(b)) => {
-                let errors = a.into_iter().chain(b).collect();
-                Err(errors)
-            }
-            (Err(a), _) => Err(a),
-            (_, Err(a)) => Err(a),
-        };
-        Check(result)
-    }
-
-    fn and_then<F>(self, f: F) -> Self
-    where
-        F: FnOnce(Type) -> Check<'a>,
-    {
-        match self.0 {
-            Ok(t) => f(t),
-            Err(e) => Check(Err(e)),
-        }
-    }
+enum TypeError<'a> {
+    EmptyExpr,
+    TypeMismatch{ expected: Type, actual: Type },
+    Undefined{ ident: &'a Ident },
+    ExpectedRecord{ got: Type },
+    ExpectedList{ got: Type },
 }
 
 #[derive(Debug)]
@@ -128,153 +21,226 @@ pub struct Error<'a> {
 }
 
 #[derive(Debug)]
-enum TypeError<'a> {
-    EmptyExpr,
-    TypeMismatch(TypeMismatch),
-    Undefined(&'a Ident),
-    ExpectedRecord(Type),
-    ExpectedList(Type),
+pub enum CheckResult<'a, A> {
+    Success(A),
+    Failure(Vec<Error<'a>>)
 }
 
-#[derive(Debug)]
-struct TypeMismatch {
-    expected: Type,
-    received: Type,
-}
+impl<'x, X> CheckResult<'x, X> {
+    fn fail(error: Error<'x>) -> CheckResult<'x, X> {
+        CheckResult::Failure(vec![error])
+    }
 
-pub type TypeContext = HashMap<Ident, Type>;
+    fn succeed(t: X) -> Self {
+        CheckResult::Success(t)
+    }
 
-pub fn typecheck<'a>(expr: &'a Expr, ctx: &mut TypeContext) -> Check<'a> {
-    let path = Vec::new();
-    expr.check(path, ctx)
-}
-
-trait Typecheck {
-    fn check<'c>(&'c self, path: Path, ctx: &mut TypeContext) -> Check;
-}
-
-impl Typecheck for Expr {
-    fn check<'c>(&'c self, path: Path, ctx: &mut TypeContext) -> Check {
-        match &self {
-            Expr::Empty => Check::fail(Error {
-                error: TypeError::EmptyExpr,
-                path: path,
-            }),
-            Expr::LitBool(_) => Check::succeed(Type::Bool),
-            Expr::LitNumber(_) => Check::succeed(Type::Number),
-            Expr::LitText(_) => Check::succeed(Type::Text),
-            Expr::Not(ref not) => not.check(path, ctx),
-            Expr::If(ref if_) => if_.check(path, ctx),
-            Expr::Chain(ref chain) => chain.check(path, ctx),
-            Expr::VariableRef(ref var) => var.check(path, ctx),
-            Expr::RecordRef(ref record_ref) => record_ref.check(path, ctx),
-            Expr::Foreach(ref foreach_) => foreach_.check(path, ctx),
+    fn map<B, F: FnOnce(X) -> B>(self, f: F) -> CheckResult<'x, B> {
+        match self {
+            CheckResult::Success(a) => CheckResult::Success(f(a)),
+            CheckResult::Failure(errs) => CheckResult::Failure(errs)
         }
     }
-}
 
-impl Typecheck for Not {
-    fn check<'c>(&'c self, path: Path, ctx: &mut TypeContext) -> Check {
-        let mut path = path.clone();
-        path.push(Seg::Not);
-
-        self.not
-            .check(path.clone(), ctx)
-            .and_then(|type_| Check::assert_bool(path, type_))
-            .map(|_| Type::Bool)
-    }
-}
-
-impl Typecheck for If {
-    fn check<'c>(&'c self, path: Path, ctx: &mut TypeContext) -> Check {
-        let mut cond_path = path.clone();
-        let mut cons_path = path.clone();
-
-        cond_path.push(Seg::IfCond);
-        cons_path.push(Seg::IfCons);
-
-        let condition = self
-            .condition
-            .check(cond_path.clone(), ctx)
-            .and_then(|type_| Check::assert_bool(cond_path, type_));
-
-        let consequence = self.consequence.check(cons_path, ctx);
-
-        Check::map2(|_, _| Type::Unit, condition, consequence)
-    }
-}
-
-impl Typecheck for Chain {
-    fn check<'c>(&'c self, path: Path, ctx: &mut TypeContext) -> Check {
-        self.chain
-            .iter()
-            .enumerate()
-            .map(|(i, expr)| {
-                let mut path = path.clone();
-                path.push(Seg::ChainN(i as i32));
-                expr.check(path, ctx)
-            })
-            .fold(Check::succeed(Type::Unit), |acc, checked| match checked.0 {
-                Ok(type_) => Check::succeed(Type::List(Box::new(type_))),
-                Err(current_errors) => match acc.0 {
-                    Ok(_) => Check(Err(current_errors)),
-                    Err(errors) => {
-                        let next = current_errors.into_iter().chain(errors).collect();
-                        Check(Err(next))
-                    }
+    fn map2<A, B, F>(f: F, r1: CheckResult<'x, A>, r2: CheckResult<'x, B>) -> Self
+    where
+        F: FnOnce(A, B) -> X
+    {
+        match r1 {
+            CheckResult::Success(a) =>
+                match r2 {
+                    CheckResult::Success(b) => CheckResult::Success(f(a, b)),
+                    CheckResult::Failure(errs) => CheckResult::Failure(errs)
                 },
-            })
+            CheckResult::Failure(errs1) =>
+                match r2 {
+                    CheckResult::Success(_) => CheckResult::Failure(errs1),
+                    CheckResult::Failure(errs2) =>
+                        CheckResult::Failure(
+                            errs1
+                                .into_iter()
+                                .chain(errs2.into_iter())
+                                .collect()
+                        )
+                }
+        }
     }
-}
 
-impl Typecheck for VariableRef {
-    fn check<'c>(&'c self, path: Path, ctx: &mut TypeContext) -> Check {
-        match ctx.get(&self.identifier).cloned() {
-            Some(a) => Check::succeed(a),
-            None => Check::fail(Error {
-                error: TypeError::Undefined(&self.identifier),
-                path: path,
-            }),
+    fn and_then<B, F>(self, f: F) -> CheckResult<'x, B>
+    where
+        F: FnOnce(X) -> CheckResult<'x, B>,
+    {
+        match self {
+            CheckResult::Success(t) => f(t),
+            CheckResult::Failure(e) => CheckResult::Failure(e)
         }
     }
 }
 
-impl Typecheck for RecordRef {
-    fn check<'c>(&'c self, path: Path, ctx: &mut TypeContext) -> Check {
-        let mut path = path.clone();
-        path.push(Seg::RecordRef);
+pub struct InferContext {
+    path: Path,
+    scope: HashMap<Ident, Type>
+}
 
-        let p = path.clone();
+impl InferContext {
+    fn fail<'a, A>(&self, error: TypeError<'a>) -> CheckResult<'a, A> {
+        CheckResult::fail(Error{ path: self.path.clone(), error })
+    }
 
-        match Check::assert_record(&self.record, path, ctx) {
-            Err(error) => Check::from(Err(error)),
-            Ok(ctx_) => match ctx_.get(&self.identifier).cloned() {
-                Some(t) => Check(Ok(t)),
-                None => Check::fail(Error {
-                    error: TypeError::Undefined(&self.identifier),
-                    path: p,
-                }),
+    fn assert_type<'a>(&self, expected: Type, actual: Type) -> CheckResult<'a, ()> {
+        if expected == actual {
+            CheckResult::succeed(())
+        } else {
+            CheckResult::fail(
+                Error{
+                    path: self.path.clone(),
+                    error: TypeError::TypeMismatch{ expected, actual },
+                }
+            )
+        }
+    }
+    fn assert_bool<'a>(&self, received: Type) -> CheckResult<'a, ()> {
+        self.assert_type(Type::Bool, received)
+    }
+
+    fn assert_number<'a>(&self, received: Type) -> CheckResult<'a, ()> {
+        self.assert_type(Type::Number, received)
+    }
+
+    fn assert_text<'a>(&self, received: Type) -> CheckResult<'a, ()> {
+        self.assert_type(Type::Text, received)
+    }
+
+    fn assert_record<'a, 'c>(&self, actual: Type) -> CheckResult<'a, HashMap<Ident, Type>> {
+        match actual {
+            Type::Record(fields) => CheckResult::succeed(fields),
+            _ => CheckResult::fail(
+                Error{
+                    path: self.path.clone(),
+                    error: TypeError::ExpectedRecord{ got: actual }
+                }
+            )
+        }
+    }
+
+    fn assert_list<'a>(&self, actual: Type) -> CheckResult<'a, Type> {
+        match actual {
+            Type::List(ty) => CheckResult::succeed(*ty),
+            _ => CheckResult::fail(
+                Error{
+                    path: self.path.clone(),
+                    error: TypeError::ExpectedList{got: actual},
+                }
+            ),
+        }
+    }
+
+    fn with_seg<A, F>(&mut self, segment: Seg, cont: F) -> A
+    where F: FnOnce(&mut InferContext) -> A {
+        self.path.push(segment);
+        let res = cont(self);
+        self.path.pop();
+        res
+    }
+
+    fn with_scope<A, F>(&mut self, name: &Ident, ty: Type, cont: F) -> A
+    where F: FnOnce(&mut InferContext) -> A {
+        match self.scope.insert(name.clone(), ty) {
+            Some(_) => panic!("Variable was shadowed. Use a better data structure."),
+            None => ()
+        }
+        let res = cont(self);
+        self.scope.remove(&name);
+        res
+    }
+
+    pub fn infer_rule<'a>(&mut self, rule: &'a Rule) -> CheckResult<'a, Type> {
+        match &rule {
+            Rule::Empty => self.fail(TypeError::EmptyExpr),
+            Rule::LitBool{value: _} => CheckResult::succeed(Type::Bool),
+            Rule::LitNumber{value: _} => CheckResult::succeed(Type::Number),
+            Rule::LitText{value: _} => CheckResult::succeed(Type::Text),
+            Rule::Not{not} =>
+                self.with_seg(
+                    Seg::Not,
+                    |this|
+                    this.infer_rule(not)
+                        .and_then(|ty| this.assert_bool(ty))
+                        .map(|()| Type::Bool)
+                ),
+            Rule::If{condition, consequence} => {
+                let cond_result = self.with_seg(
+                    Seg::IfCond,
+                    |this|
+                    this.infer_rule(condition)
+                        .and_then(|ty| this.assert_bool(ty))
+                );
+                let cons_result = self.with_seg(
+                    Seg::IfCond,
+                    |this| this.infer_rule(consequence)
+                );
+                CheckResult::map2(|_, a| a, cond_result, cons_result)
             },
+            Rule::Chain{value} =>
+                value
+                .iter()
+                .enumerate()
+                .fold(
+                    CheckResult::succeed(Type::Unit),
+                    |acc, (ix, rule)| {
+                        let res = self.with_seg(
+                            Seg::ChainN(ix as i32),
+                            |this| this.infer_rule(rule)
+                        );
+                        CheckResult::map2(|_, a| a, acc, res)
+                    }
+                ),
+            Rule::VariableRef{value} =>
+                match self.scope.get(value) {
+                    Some(a) => CheckResult::succeed(a.clone()),
+                    None => CheckResult::fail(
+                        Error {
+                            path: self.path.clone(),
+                            error: TypeError::Undefined{ident: value},
+                        }
+                    ),
+                },
+            Rule::RecordRef{record, identifier} => {
+                let record_res = self.with_seg(
+                    Seg::RecordRef,
+                    |this|
+                    this.infer_rule(record)
+                        .and_then(|ty| this.assert_record(ty))
+                );
+                record_res.and_then(
+                    |fields|
+                    match fields.get(identifier) {
+                        None => self.fail(
+                            TypeError::Undefined{ident: identifier}
+                        ),
+                        Some(ty) => CheckResult::succeed(ty.clone())
+                    }
+                )
+            },
+            Rule::Foreach{var, list, body} => {
+                let list_res = self.with_seg(
+                    Seg::ForeachList,
+                    |this|
+                    this.infer_rule(list)
+                        .and_then(|list_ty| this.assert_list(list_ty))
+                );
+                list_res.and_then(
+                    |ty|
+                    self.with_seg(
+                        Seg::ForeachBody,
+                        |this| this.with_scope(
+                            var, ty,
+                            |this| this.infer_rule(body)
+                        )
+                    )
+                )
+            }
         }
     }
 }
 
-impl Typecheck for Foreach {
-    fn check<'c>(&'c self, path: Path, ctx: &mut TypeContext) -> Check {
-        let mut list_path = path.clone();
-        let mut body_path = path.clone();
-
-        list_path.push(Seg::ForeachList);
-        body_path.push(Seg::ForeachBody);
-
-        let list = self
-            .list
-            .check(list_path.clone(), ctx)
-            .and_then(|type_| Check::assert_list(list_path, type_));
-
-        // TODO: Extend type context with bound variale
-        let body = self.body.check(body_path, ctx);
-
-        Check::map2(|_, type_| Type::List(Box::new(type_)), list, body)
-    }
-}

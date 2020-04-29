@@ -1,32 +1,33 @@
 use std::fmt;
 
-use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::Deserialize;
 use serde_json::error::Error as JsonError;
 
 use crate::ident::Ident;
 
-pub fn parse(exp: &str) -> Result<Expr, JsonError> {
+pub fn parse(exp: &str) -> Result<Rule, JsonError> {
     serde_json::from_str(&exp)
 }
 
 // AST
 #[derive(Deserialize, Debug)]
-#[serde(tag = "name")]
-#[serde(rename_all = "camelCase")]
-pub enum Expr {
+pub enum Rule {
     Empty,
-    LitBool(Literal<bool>),
-    LitNumber(Literal<i32>),
-    LitText(Literal<String>),
-    Not(Box<Not>),
-    If(Box<If>),
-    Chain(Chain),
-    VariableRef(VariableRef),
-    RecordRef(Box<RecordRef>),
-    Foreach(Box<Foreach>),
+    LitBool{value: bool},
+    LitNumber{value: i32},
+    LitText{value: String},
+    Not{not: Box<Rule>},
+    If{condition: Box<Rule>, consequence: Box<Rule>},
+    Chain{value: Vec<Rule>},
+    VariableRef{value: Ident},
+    RecordRef{record: Box<Rule>, identifier: Ident},
+    Foreach{var: Ident, list: Box<Rule>, body: Box<Rule>},
 }
 
+// #[serde(tag = "name")]
+// #[serde(rename_all = "camelCase")]
+
+/*
 #[derive(Deserialize, Debug)]
 pub struct Literal<T> {
     value: T,
@@ -65,6 +66,7 @@ pub struct Foreach {
     pub body: Expr,
     pub boundVar: String,
 }
+*/
 
 #[derive(Deserialize)]
 #[serde(field_identifier, rename_all = "lowercase")]
@@ -74,6 +76,7 @@ enum PivotField {
     Center,
 }
 
+/*
 impl<'de> Deserialize<'de> for Chain {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -133,3 +136,4 @@ impl<'de> Deserialize<'de> for Chain {
         deserializer.deserialize_struct("Chain", FIELDS, ChainVisitor)
     }
 }
+*/
