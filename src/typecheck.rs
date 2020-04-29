@@ -137,9 +137,9 @@ impl InferContext {
 
     fn with_seg<A, F>(&mut self, segment: Seg, cont: F) -> A
     where F: FnOnce(&mut InferContext) -> A {
-        self.path.push(segment);
+        self.path.push_back(segment);
         let res = cont(self);
-        self.path.pop();
+        self.path.pop_back();
         res
     }
 
@@ -198,7 +198,7 @@ impl InferContext {
             Rule::VariableRef{value} =>
                 match self.scope.get(value) {
                     Some(a) => CheckResult::succeed(a.clone()),
-                    None => 
+                    None =>
                         self.fail(
                             TypeError::Undefined{ident: value}
                         )

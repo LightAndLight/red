@@ -1,4 +1,6 @@
-pub type Path = Vec<Seg>;
+use std::collections::VecDeque;
+
+pub type Path = VecDeque<Seg>;
 
 #[derive(Debug, Clone)]
 pub enum Seg {
