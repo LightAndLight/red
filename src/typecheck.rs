@@ -198,12 +198,10 @@ impl InferContext {
             Rule::VariableRef{value} =>
                 match self.scope.get(value) {
                     Some(a) => CheckResult::succeed(a.clone()),
-                    None => CheckResult::fail(
-                        Error {
-                            path: self.path.clone(),
-                            error: TypeError::Undefined{ident: value},
-                        }
-                    ),
+                    None => 
+                        self.fail(
+                            TypeError::Undefined{ident: value}
+                        )
                 },
             Rule::RecordRef{record, identifier} => {
                 let record_res = self.with_seg(
