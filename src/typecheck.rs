@@ -155,7 +155,7 @@ impl InferContext {
     }
 
     pub fn infer_rule<'a>(&mut self, rule: &'a Rule) -> CheckResult<'a, Type> {
-        match &rule {
+        match rule {
             Rule::Empty => self.fail(TypeError::EmptyExpr),
             Rule::LitBool{value: _} => CheckResult::succeed(Type::Bool),
             Rule::LitNumber{value: _} => CheckResult::succeed(Type::Number),
